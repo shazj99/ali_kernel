@@ -59,6 +59,8 @@ static int really_do_swap_account __initdata = 1; /* for remember boot option*/
 #define do_swap_account		(0)
 #endif
 
+int memcg_target_reclaim = 0;
+
 #define SOFTLIMIT_EVENTS_THRESH (1000)
 
 /*

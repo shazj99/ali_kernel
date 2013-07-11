@@ -100,6 +100,7 @@ extern int sysctl_enable_cnx_ra;
 extern int sysctl_mlock_flush_pagevec;
 extern int vm_enable_legacy_mm;
 extern int sysctl_enable_bio_netoops;
+extern int memcg_target_reclaim;
 
 int exec_shield = (1<<0);
 /* exec_shield is a bitmask:
@@ -1632,6 +1633,17 @@ static struct ctl_table vm_table[] = {
 		.ctl_name	= VM_ENABLE_LEGACY_MM,
 		.procname	= "enable_legacy_mm",
 		.data		= &vm_enable_legacy_mm,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.ctl_name	= VM_TARGET_RECLAIM,
+		.procname	= "memcg_target_reclaim",
+		.data		= &memcg_target_reclaim,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
