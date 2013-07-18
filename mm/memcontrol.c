@@ -1295,6 +1295,102 @@ static int mem_cgroup_hierarchical_reclaim(struct mem_cgroup *root_mem,
 	return total;
 }
 
+static void mem_cgroup_target_reclaim(struct mem_cgroup *root_mem,
+						struct zone *zone,
+						gfp_t gfp_mask,
+						unsigned long reclaim_options)
+{
+	struct mem_cgroup *victim, *first = NULL, *target_memcg = NULL;
+	int ret, total = 0;
+	int loop = 0;
+	bool noswap = reclaim_options & MEM_CGROUP_RECLAIM_NOSWAP;
+	unsigned long max_excess = 0, victim_excess;
+
+	/* If memsw_is_minimum==1, swap-out is of-no-use. */
+	if (root_mem->memsw_is_minimum)
+		noswap = true;
+
+	while (1) {
+		victim = mem_cgroup_select_victim(root_mem);
+
+		/* whether we have traversed all of the children*/
+		if (victim == first) {
+			css_put(&victim->css);
+			break;
+		}
+		if (!first)
+			first = victim;
+
+		if (!mem_cgroup_local_usage(&victim->stat)) {
+			/* this cgroup's local usage == 0 */
+			css_put(&victim->css);
+			continue;
+		}
+
+		victim_excess = mem_cgroup_get_excess(victim);
+		if (!victim_excess) {
+			css_put(&victim->css);
+			continue;
+		}
+		if (victim_excess > max_excess) {
+			max_excess = victim_excess;
+			target_memcg = victim;
+		}
+
+		css_put(&victim->css);
+	}
+
+	if (target_memcg) {
+		if (css_tryget(&target_memcg->css)) {
+			while (1) {
+				ret = mem_cgroup_shrink_node_zone(target_memcg, gfp_mask,
+					noswap, get_swappiness(target_memcg), zone,
+					zone->zone_pgdat->node_id);
+				total += ret;
+
+				if (mem_cgroup_check_under_limit(root_mem)) {
+					css_put(&target_memcg->css);
+					return;
+				}
+
+				loop ++;
+				if (loop >= 1)
+					drain_all_stock_async();
+
+				if (loop >= 2) {
+					if (!total) {
+					/*
+					 * If we have not been able to reclaim
+					 * anything, it might because there are
+					 * no reclaimable pages under the memcg,
+					 * so fall back to original target reclaim.
+					 */
+						css_put(&target_memcg->css);
+						mem_cgroup_hierarchical_reclaim(root_mem,
+								zone, gfp_mask, reclaim_options);
+						return;
+					}
+
+					/*
+					 * We want to do more targetted reclaim.
+					 * excess >> 2 is not to excessive so as to
+					 * reclaim too much, nor too less.
+					 */
+					if (total >= (max_excess >> 2) ||
+						(loop > MEM_CGROUP_MAX_RECLAIM_LOOPS)) {
+						css_put(&target_memcg->css);
+						return;
+					}
+				}
+			}
+		}
+	} else {
+		mem_cgroup_hierarchical_reclaim(root_mem, zone,
+				gfp_mask, reclaim_options);
+		return;
+	}
+}
+
 static int mem_cgroup_oom_lock_cb(struct mem_cgroup *mem, void *data)
 {
 	int *val = (int *)data;
@@ -1707,7 +1803,10 @@ again:
 		if (!(gfp_mask & __GFP_WAIT))
 			goto nomem;
 
-		mem_cgroup_hierarchical_reclaim(mem_over_limit, NULL,
+		if (memcg_target_reclaim)
+			mem_cgroup_target_reclaim(mem_over_limit, NULL, gfp_mask, flags);
+		else
+			mem_cgroup_hierarchical_reclaim(mem_over_limit, NULL,
 						gfp_mask, flags);
 
 		if (mem_cgroup_check_room(mem_over_limit, page_size))
