@@ -685,12 +685,20 @@ struct address_space {
 	spinlock_t		private_lock;	/* for use by the address_space */
 	struct list_head	private_list;	/* ditto */
 	struct address_space	*assoc_mapping;	/* ditto */
+#ifdef CONFIG_CGROUP_MEM_RES_CTLR
+	unsigned short		i_memcg;	/* css_id of memcg dirtier */
+#endif
 } __attribute__((aligned(sizeof(long))));
 	/*
 	 * On most architectures that alignment is already the case; but
 	 * must be enforced here for CRIS, to let the least signficant bit
 	 * of struct page's "mapping" pointer be used for PAGE_MAPPING_ANON.
 	 */
+/*
+ * When an address_space is shared by multiple memcg dirtieres, then i_memcg is
+ * set to this special, wildcard, css_id value (zero).
+ */
+#define I_MEMCG_SHARED 0
 
 struct eio {
 	unsigned int threshold;

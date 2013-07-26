@@ -115,6 +115,8 @@ mem_cgroup_prepare_migration(struct page *page,
 extern void mem_cgroup_end_migration(struct mem_cgroup *mem,
 	struct page *oldpage, struct page *newpage, bool migration_ok);
 
+void mem_cgroup_mark_inode_dirty(struct inode *inode);
+
 /*
  * For memory reclaim.
  */
@@ -267,6 +269,10 @@ mem_cgroup_prepare_migration(struct page *page, struct page *newpage,
 
 static inline void mem_cgroup_end_migration(struct mem_cgroup *mem,
 		struct page *oldpage, struct page *newpage, bool migration_ok)
+{
+}
+
+static inline void mem_cgroup_mark_inode_dirty(struct inode *inode)
 {
 }
 

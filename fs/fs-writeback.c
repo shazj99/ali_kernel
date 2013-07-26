@@ -19,6 +19,7 @@
 #include <linux/sched.h>
 #include <linux/fs.h>
 #include <linux/mm.h>
+#include <linux/memcontrol.h>
 #include <linux/kthread.h>
 #include <linux/freezer.h>
 #include <linux/writeback.h>
@@ -953,6 +954,7 @@ void __mark_inode_dirty(struct inode *inode, int flags)
 
 			inode->dirtied_when = jiffies;
 			list_move(&inode->i_list, &wb->b_dirty);
+			mem_cgroup_mark_inode_dirty(inode);
 		}
 	}
 out:

@@ -172,6 +172,9 @@ int inode_init_always(struct super_block *sb, struct inode *inode)
 	mapping->assoc_mapping = NULL;
 	mapping->backing_dev_info = &default_backing_dev_info;
 	mapping->writeback_index = 0;
+#ifdef CONFIG_CGROUP_MEM_RES_CTLR
+	mapping->i_memcg = I_MEMCG_SHARED;
+#endif
 
 	/*
 	 * If the block_device provides a backing_dev_info for client
