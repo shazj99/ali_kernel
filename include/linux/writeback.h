@@ -97,7 +97,7 @@ static inline void inode_sync_wait(struct inode *inode)
  */
 void laptop_io_completion(void);
 void laptop_sync_completion(void);
-void throttle_vm_writeout(gfp_t gfp_mask);
+void throttle_vm_writeout(gfp_t gfp_mask, struct mem_cgroup *memcg);
 
 /* These are exported to sysctl. */
 extern int dirty_background_ratio;
