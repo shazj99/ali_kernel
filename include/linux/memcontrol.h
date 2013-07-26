@@ -38,12 +38,21 @@ enum mem_cgroup_stat_index {
 	MEM_CGROUP_STAT_FILE_DIRTY,	/* # of dirty pages in page cache */
 	MEM_CGROUP_STAT_FILE_WRITEBACK,	/* # of pages under writeback */
 	MEM_CGROUP_STAT_FILE_UNSTABLE_NFS, /* # of NFS unstable pages */
+	MEM_CGROUP_STAT_DIRTYABLE_PAGES, /* # of pages that could be dirty */
 	MEM_CGROUP_STAT_PGPGIN_COUNT,	/* # of pages paged in */
 	MEM_CGROUP_STAT_PGPGOUT_COUNT,	/* # of pages paged out */
 	MEM_CGROUP_STAT_EVENTS,	/* sum of pagein + pageout for internal use */
 	MEM_CGROUP_STAT_SWAPOUT, /* # of pages, swapped out */
 
 	MEM_CGROUP_STAT_NSTATS,
+};
+
+struct dirty_info {
+	unsigned long dirty_thresh;
+	unsigned long background_thresh;
+	unsigned long nr_file_dirty;
+	unsigned long nr_writeback;
+	unsigned long nr_unstable_nfs;
 };
 
 #ifdef CONFIG_CGROUP_MEM_RES_CTLR

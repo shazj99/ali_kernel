@@ -343,6 +343,8 @@ static void mem_cgroup_get(struct mem_cgroup *mem);
 static void mem_cgroup_put(struct mem_cgroup *mem);
 static struct mem_cgroup *parent_mem_cgroup(struct mem_cgroup *mem);
 static void drain_all_stock_async(void);
+static void mem_cgroup_get_recursive_idx_stat(struct mem_cgroup *mem,
+				enum mem_cgroup_stat_index idx, s64 *val);
 
 static struct mem_cgroup_per_zone *
 mem_cgroup_zoneinfo(struct mem_cgroup *mem, int nid, int zid)
@@ -1094,6 +1096,11 @@ static int mem_cgroup_count_children_cb(struct mem_cgroup *mem, void *data)
 	return 0;
 }
 
+unsigned long dirty_info_reclaimable(struct dirty_info *info)
+{
+	return info->nr_file_dirty + info->nr_unstable_nfs;
+}
+
 /*
  * Return true if the current memory cgroup has local dirty memory settings.
  * There is an allowed race between the current task migrating in-to/out-of the
@@ -1122,6 +1129,115 @@ static void mem_cgroup_dirty_param(struct vm_dirty_param *param,
 		param->dirty_background_ratio = dirty_background_ratio;
 		param->dirty_background_bytes = dirty_background_bytes;
 	}
+}
+
+static inline bool mem_cgroup_can_swap(struct mem_cgroup *memcg)
+{
+	if (!do_swap_account)
+		return nr_swap_pages > 0;
+	return !memcg->memsw_is_minimum &&
+		(res_counter_read_u64(&memcg->memsw, RES_LIMIT) > 0);
+}
+
+/*
+ * Return the number of additional pages that the @memcg cgroup could allocate.
+ * If use_hierarchy is set, then this involves checking parent mem cgroups to
+ * find the cgroup with the smallest free space.
+ */
+static unsigned long
+mem_cgroup_hierarchical_free_pages(struct mem_cgroup *memcg)
+{
+	u64 free;
+	unsigned long min_free;
+
+	min_free = global_page_state(NR_FREE_PAGES);
+
+	while (memcg) {
+		free = (res_counter_read_u64(&memcg->res, RES_LIMIT) -
+			res_counter_read_u64(&memcg->res, RES_USAGE)) >>
+			PAGE_SHIFT;
+		min_free = min_t(u64, min_free, free);
+		memcg = parent_mem_cgroup(memcg);
+	}
+
+	return min_free;
+}
+
+/*
+ * mem_cgroup_page_stat() - get memory cgroup file cache statistics
+ * @memcg:     memory cgroup to query
+ * @item:      memory statistic item exported to the kernel
+ *
+ * Return the accounted statistic value.
+ */
+static unsigned long mem_cgroup_page_stat(struct mem_cgroup *memcg,
+					  enum mem_cgroup_stat_index item)
+{
+	s64 value;
+
+	/*
+	 * If we're looking for dirtyable pages we need to evaluate free pages
+	 * depending on the limit and usage of the parents first of all.
+	 */
+	if (item == MEM_CGROUP_STAT_DIRTYABLE_PAGES)
+		value = mem_cgroup_hierarchical_free_pages(memcg);
+	else
+		value = 0;
+
+	/*
+	 * Recursively evaluate page statistics against all cgroup under
+	 * hierarchy tree
+	 */
+	mem_cgroup_get_recursive_idx_stat(memcg, item, &value);
+
+	/*
+	 * Summing of unlocked per-cpu counters is racy and may yield a slightly
+	 * negative value.  Zero is the only sensible value in such cases.
+	 */
+	if (unlikely(value < 0))
+		value = 0;
+
+	return value;
+}
+
+/* Return dirty thresholds and usage for @memcg. */
+void mem_cgroup_dirty_info(unsigned long sys_available_mem,
+				  struct mem_cgroup *memcg,
+				  struct dirty_info *info)
+{
+	unsigned long uninitialized_var(available_mem);
+	struct vm_dirty_param dirty_param;
+
+	mem_cgroup_dirty_param(&dirty_param, memcg);
+
+	if (!dirty_param.dirty_bytes || !dirty_param.dirty_background_bytes)
+		available_mem = min(
+			sys_available_mem,
+			mem_cgroup_page_stat(memcg, MEM_CGROUP_STAT_DIRTYABLE_PAGES));
+
+	if (dirty_param.dirty_bytes)
+		info->dirty_thresh =
+			DIV_ROUND_UP(dirty_param.dirty_bytes, PAGE_SIZE);
+	else
+		info->dirty_thresh =
+			(dirty_param.dirty_ratio * available_mem) / 100;
+
+	if (dirty_param.dirty_background_bytes)
+		info->background_thresh =
+			DIV_ROUND_UP(dirty_param.dirty_background_bytes,
+				     PAGE_SIZE);
+	else
+		info->background_thresh =
+			(dirty_param.dirty_background_ratio *
+			       available_mem) / 100;
+
+	info->nr_file_dirty = mem_cgroup_page_stat(memcg, MEM_CGROUP_STAT_FILE_DIRTY);
+	info->nr_writeback =
+		mem_cgroup_page_stat(memcg, MEM_CGROUP_STAT_FILE_WRITEBACK);
+	info->nr_unstable_nfs =
+		mem_cgroup_page_stat(memcg, MEM_CGROUP_STAT_FILE_UNSTABLE_NFS);
+
+	trace_mem_cgroup_dirty_info(css_id(&memcg->css), info);
 }
 
 /**
@@ -3385,7 +3501,16 @@ static int
 mem_cgroup_get_idx_stat(struct mem_cgroup *mem, void *data)
 {
 	struct mem_cgroup_idx_data *d = data;
-	d->val += mem_cgroup_read_stat(&mem->stat, d->idx);
+
+	if (d->idx == MEM_CGROUP_STAT_DIRTYABLE_PAGES) {
+		d->val += mem_cgroup_read_stat(&mem->stat, LRU_ACTIVE_FILE) +
+			mem_cgroup_read_stat(&mem->stat, LRU_INACTIVE_FILE);
+		if (mem_cgroup_can_swap(mem))
+			d->val += mem_cgroup_read_stat(&mem->stat, LRU_ACTIVE_ANON) +
+				mem_cgroup_read_stat(&mem->stat, LRU_INACTIVE_ANON);
+	}
+	else
+		d->val += mem_cgroup_read_stat(&mem->stat, d->idx);
 	return 0;
 }
 
