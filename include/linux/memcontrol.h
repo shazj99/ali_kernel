@@ -25,6 +25,27 @@ struct page_cgroup;
 struct page;
 struct mm_struct;
 
+/*
+ * Statistics for memory cgroup.
+ */
+enum mem_cgroup_stat_index {
+	/*
+	 * For MEM_CONTAINER_TYPE_ALL, usage = pagecache + rss.
+	 */
+	MEM_CGROUP_STAT_CACHE, 	   /* # of pages charged as cache */
+	MEM_CGROUP_STAT_RSS,	   /* # of pages charged as anon rss */
+	MEM_CGROUP_STAT_FILE_MAPPED,  /* # of pages charged as file rss */
+	MEM_CGROUP_STAT_FILE_DIRTY,	/* # of dirty pages in page cache */
+	MEM_CGROUP_STAT_FILE_WRITEBACK,	/* # of pages under writeback */
+	MEM_CGROUP_STAT_FILE_UNSTABLE_NFS, /* # of NFS unstable pages */
+	MEM_CGROUP_STAT_PGPGIN_COUNT,	/* # of pages paged in */
+	MEM_CGROUP_STAT_PGPGOUT_COUNT,	/* # of pages paged out */
+	MEM_CGROUP_STAT_EVENTS,	/* sum of pagein + pageout for internal use */
+	MEM_CGROUP_STAT_SWAPOUT, /* # of pages, swapped out */
+
+	MEM_CGROUP_STAT_NSTATS,
+};
+
 #ifdef CONFIG_CGROUP_MEM_RES_CTLR
 /*
  * All "charge" functions with gfp_mask should use GFP_KERNEL or
@@ -125,7 +146,8 @@ static inline bool mem_cgroup_disabled(void)
 	return false;
 }
 
-void mem_cgroup_update_file_mapped(struct page *page, int val);
+void mem_cgroup_update_page_stat(struct page *page, enum mem_cgroup_stat_index idx,
+						int val);
 unsigned long mem_cgroup_soft_limit_reclaim(struct zone *zone, int order,
 						gfp_t gfp_mask, int nid,
 						int zid);
@@ -305,8 +327,8 @@ mem_cgroup_print_oom_info(struct mem_cgroup *memcg, struct task_struct *p)
 {
 }
 
-static inline void mem_cgroup_update_file_mapped(struct page *page,
-							int val)
+static inline void mem_cgroup_update_page_stat(struct page *page,
+					enum mem_cgroup_stat_index idx, int val)
 {
 }
 

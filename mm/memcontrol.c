@@ -61,24 +61,6 @@ static int really_do_swap_account __initdata = 1; /* for remember boot option*/
 
 #define SOFTLIMIT_EVENTS_THRESH (1000)
 
-/*
- * Statistics for memory cgroup.
- */
-enum mem_cgroup_stat_index {
-	/*
-	 * For MEM_CONTAINER_TYPE_ALL, usage = pagecache + rss.
-	 */
-	MEM_CGROUP_STAT_CACHE, 	   /* # of pages charged as cache */
-	MEM_CGROUP_STAT_RSS,	   /* # of pages charged as anon rss */
-	MEM_CGROUP_STAT_FILE_MAPPED,  /* # of pages charged as file rss */
-	MEM_CGROUP_STAT_PGPGIN_COUNT,	/* # of pages paged in */
-	MEM_CGROUP_STAT_PGPGOUT_COUNT,	/* # of pages paged out */
-	MEM_CGROUP_STAT_EVENTS,	/* sum of pagein + pageout for internal use */
-	MEM_CGROUP_STAT_SWAPOUT, /* # of pages, swapped out */
-
-	MEM_CGROUP_STAT_NSTATS,
-};
-
 struct mem_cgroup_stat_cpu {
 	s64 count[MEM_CGROUP_STAT_NSTATS];
 } ____cacheline_aligned_in_smp;
@@ -1434,7 +1416,8 @@ bool mem_cgroup_handle_oom(struct mem_cgroup *mem, gfp_t mask)
  * Currently used to update mapped file statistics, but the routine can be
  * generalized to update other statistics as well.
  */
-void mem_cgroup_update_file_mapped(struct page *page, int val)
+void mem_cgroup_update_page_stat(struct page *page,
+				enum mem_cgroup_stat_index idx, int val)
 {
 	struct mem_cgroup *mem;
 	struct mem_cgroup_stat *stat;
@@ -1461,14 +1444,52 @@ void mem_cgroup_update_file_mapped(struct page *page, int val)
 	stat = &mem->stat;
 	cpustat = &stat->cpustat[cpu];
 
-	__mem_cgroup_stat_add_safe(cpustat, MEM_CGROUP_STAT_FILE_MAPPED, val);
-	if (val > 0)
-		SetPageCgroupFileMapped(pc);
-	else if (!page_mapped(page)) /* page could have been remapped */
-		ClearPageCgroupFileMapped(pc);
+	switch (idx) {
+	case MEM_CGROUP_STAT_FILE_MAPPED:
+		if (val > 0)
+			SetPageCgroupFileMapped(pc);
+		else if (!page_mapped(page)) /* page could have been remapped */
+			ClearPageCgroupFileMapped(pc);
+		break;
+	case MEM_CGROUP_STAT_FILE_DIRTY:
+		if (val > 0) {
+			if (TestSetPageCgroupFileDirty(pc))
+				val = 0;
+		} else {
+			if (!TestClearPageCgroupFileDirty(pc))
+				val = 0;
+		}
+		break;
+	case MEM_CGROUP_STAT_FILE_WRITEBACK:
+		/*
+		 * This counter is adjusted while holding the mapping's
+		 * tree_lock.  Therefore there is no race between settings and
+		 * clearing of this flag.
+		 */
+		if (val > 0)
+			SetPageCgroupFileWriteback(pc);
+		else
+			ClearPageCgroupFileWriteback(pc);
+		break;
+	case MEM_CGROUP_STAT_FILE_UNSTABLE_NFS:
+		/* Use Test{Set,Clear} to only un/charge the memcg once. */
+		if (val > 0) {
+			if (TestSetPageCgroupFileUnstableNFS(pc))
+				val = 0;
+		} else {
+			if (!TestClearPageCgroupFileUnstableNFS(pc))
+				val = 0;
+		}
+		break;
+	default:
+		BUG();
+	}
+	__mem_cgroup_stat_add_safe(cpustat, idx, val);
+
 done:
 	unlock_page_cgroup(pc);
 }
+EXPORT_SYMBOL(mem_cgroup_update_page_stat);
 
 /*
  * size of first charge trial. "32" comes from vmscan.c's magic value.
@@ -1904,6 +1925,27 @@ static void __mem_cgroup_commit_charge(struct mem_cgroup *mem,
 	unlock_page_cgroup(pc);
 }
 
+static inline
+void mem_cgroup_move_account_page_stat(struct mem_cgroup *from,
+					struct mem_cgroup *to,
+					enum mem_cgroup_stat_index idx)
+{
+	struct mem_cgroup_stat_cpu *cpustat;
+	struct mem_cgroup_stat *stat;
+	int cpu;
+	/*
+	 * We don't tace care of page_size bacause the page is file cache.
+	 */
+	cpu = smp_processor_id();
+	stat = &from->stat;
+	cpustat = &stat->cpustat[cpu];
+	__mem_cgroup_stat_add_safe(cpustat, idx, -1);
+
+	stat = &to->stat;
+	cpustat = &stat->cpustat[cpu];
+	__mem_cgroup_stat_add_safe(cpustat, idx, 1);
+}
+
 /**
  * mem_cgroup_move_account - move account of the page
  * @page: the page
@@ -1939,26 +1981,18 @@ static int mem_cgroup_move_account(struct page *page, struct page_cgroup *pc,
 	if (!PageCgroupUsed(pc) || pc->mem_cgroup != from)
 		goto out;
 
-	if (PageCgroupFileMapped(pc)) {
-		struct mem_cgroup_stat_cpu *cpustat;
-		struct mem_cgroup_stat *stat;
-		int cpu;
-		/*
-		 * We don't tace care of page_size bacause the page is file cache.
-		 */
-		cpu = smp_processor_id();
-		/* Update mapped_file data for mem_cgroup "from" */
-		stat = &from->stat;
-		cpustat = &stat->cpustat[cpu];
-		__mem_cgroup_stat_add_safe(cpustat, MEM_CGROUP_STAT_FILE_MAPPED,
-						-1);
-
-		/* Update mapped_file data for mem_cgroup "to" */
-		stat = &to->stat;
-		cpustat = &stat->cpustat[cpu];
-		__mem_cgroup_stat_add_safe(cpustat, MEM_CGROUP_STAT_FILE_MAPPED,
-						1);
-	}
+	if (PageCgroupFileMapped(pc))
+		mem_cgroup_move_account_page_stat(from, to,
+					MEM_CGROUP_STAT_FILE_MAPPED);
+	if (PageCgroupFileDirty(pc))
+		mem_cgroup_move_account_page_stat(from, to,
+					MEM_CGROUP_STAT_FILE_DIRTY);
+	if (PageCgroupFileWriteback(pc))
+		mem_cgroup_move_account_page_stat(from, to,
+					MEM_CGROUP_STAT_FILE_WRITEBACK);
+	if (PageCgroupFileUnstableNFS(pc))
+		mem_cgroup_move_account_page_stat(from, to,
+					MEM_CGROUP_STAT_FILE_UNSTABLE_NFS);
 
 	mem_cgroup_charge_statistics(from, pc, -page_size);
 	if (uncharge)
@@ -3460,6 +3494,9 @@ enum {
 	MCS_PGPGIN,
 	MCS_PGPGOUT,
 	MCS_SWAP,
+	MCS_FILE_DIRTY,
+	MCS_WRITEBACK,
+	MCS_UNSTABLE_NFS,
 	MCS_INACTIVE_ANON,
 	MCS_ACTIVE_ANON,
 	MCS_INACTIVE_FILE,
@@ -3482,6 +3519,9 @@ struct {
 	{"pgpgin", "total_pgpgin"},
 	{"pgpgout", "total_pgpgout"},
 	{"swap", "total_swap"},
+	{"dirty", "total_dirty"},
+	{"writeback", "total_writeback"},
+	{"nfs_unstable", "total_nfs_unstable"},
 	{"inactive_anon", "total_inactive_anon"},
 	{"active_anon", "total_active_anon"},
 	{"inactive_file", "total_inactive_file"},
@@ -3510,6 +3550,14 @@ static int mem_cgroup_get_local_stat(struct mem_cgroup *mem, void *data)
 		val = mem_cgroup_read_stat(&mem->stat, MEM_CGROUP_STAT_SWAPOUT);
 		s->stat[MCS_SWAP] += val * PAGE_SIZE;
 	}
+
+	/* dirty stat */
+	val = mem_cgroup_read_stat(&mem->stat, MEM_CGROUP_STAT_FILE_DIRTY);
+	s->stat[MCS_FILE_DIRTY] += val * PAGE_SIZE;
+	val = mem_cgroup_read_stat(&mem->stat, MEM_CGROUP_STAT_FILE_WRITEBACK);
+	s->stat[MCS_WRITEBACK] += val * PAGE_SIZE;
+	val = mem_cgroup_read_stat(&mem->stat, MEM_CGROUP_STAT_FILE_UNSTABLE_NFS);
+	s->stat[MCS_UNSTABLE_NFS] += val * PAGE_SIZE;
 
 	/* per zone stat */
 	val = mem_cgroup_get_local_zonestat(mem, LRU_INACTIVE_ANON);
