@@ -1111,6 +1111,8 @@ int __set_page_dirty_no_writeback(struct page *page)
 void account_page_dirtied(struct page *page, struct address_space *mapping)
 {
 	if (mapping_cap_account_dirty(mapping)) {
+		mem_cgroup_update_page_stat(page,
+				MEM_CGROUP_STAT_FILE_DIRTY, 1);
 		__inc_zone_page_state(page, NR_FILE_DIRTY);
 		__inc_bdi_stat(mapping->backing_dev_info, BDI_RECLAIMABLE);
 		task_dirty_inc(current);
@@ -1286,6 +1288,8 @@ int clear_page_dirty_for_io(struct page *page)
 		 * for more comments.
 		 */
 		if (TestClearPageDirty(page)) {
+			mem_cgroup_update_page_stat(page,
+					MEM_CGROUP_STAT_FILE_DIRTY, -1);
 			dec_zone_page_state(page, NR_FILE_DIRTY);
 			dec_bdi_stat(mapping->backing_dev_info,
 					BDI_RECLAIMABLE);
@@ -1321,8 +1325,10 @@ int test_clear_page_writeback(struct page *page)
 	} else {
 		ret = TestClearPageWriteback(page);
 	}
-	if (ret)
+	if (ret) {
+		mem_cgroup_update_page_stat(page, MEM_CGROUP_STAT_FILE_WRITEBACK, -1);
 		dec_zone_page_state(page, NR_WRITEBACK);
+	}
 	return ret;
 }
 
@@ -1355,8 +1361,11 @@ int test_set_page_writeback(struct page *page)
 	} else {
 		ret = TestSetPageWriteback(page);
 	}
-	if (!ret)
+	if (!ret) {
+		mem_cgroup_update_page_stat(page,
+				MEM_CGROUP_STAT_FILE_WRITEBACK, 1);
 		inc_zone_page_state(page, NR_WRITEBACK);
+	}
 	return ret;
 
 }
