@@ -214,7 +214,7 @@ static bool inode_dirtied_after(struct inode *inode, unsigned long t)
  */
 static void move_expired_inodes(struct list_head *delaying_queue,
 			       struct list_head *dispatch_queue,
-				unsigned long *older_than_this)
+				struct writeback_control *work)
 {
 	LIST_HEAD(tmp);
 	struct list_head *pos, *node;
@@ -224,8 +224,8 @@ static void move_expired_inodes(struct list_head *delaying_queue,
 
 	while (!list_empty(delaying_queue)) {
 		inode = list_entry(delaying_queue->prev, struct inode, i_list);
-		if (older_than_this &&
-		    inode_dirtied_after(inode, *older_than_this))
+		if (work->older_than_this &&
+		    inode_dirtied_after(inode, *work->older_than_this))
 			break;
 		if (sb && sb != inode->i_sb)
 			do_sb_sort = 1;
@@ -262,10 +262,10 @@ static void move_expired_inodes(struct list_head *delaying_queue,
  *                                           |
  *                                           +--> dequeue for IO
  */
-static void queue_io(struct bdi_writeback *wb, unsigned long *older_than_this)
+static void queue_io(struct bdi_writeback *wb, struct writeback_control *work)
 {
 	list_splice_init(&wb->b_more_io, &wb->b_io);
-	move_expired_inodes(&wb->b_dirty, &wb->b_io, older_than_this);
+	move_expired_inodes(&wb->b_dirty, &wb->b_io, work);
 }
 
 static int write_inode(struct inode *inode, struct writeback_control *wbc)
@@ -522,7 +522,7 @@ void writeback_inodes_wb(struct bdi_writeback *wb,
 		wbc->wb_start = jiffies; /* livelock avoidance */
 	spin_lock(&inode_lock);
 	if (!wbc->for_kupdate || list_empty(&wb->b_io))
-		queue_io(wb, wbc->older_than_this);
+		queue_io(wb, wbc);
 
 	while (!list_empty(&wb->b_io)) {
 		struct inode *inode = list_entry(wb->b_io.prev,
@@ -550,7 +550,7 @@ static void __writeback_inodes_sb(struct super_block *sb,
 
 	spin_lock(&inode_lock);
 	if (!wbc->for_kupdate || list_empty(&wb->b_io))
-		queue_io(wb, wbc->older_than_this);
+		queue_io(wb, wbc);
 	writeback_sb_inodes(sb, wb, wbc, true);
 	spin_unlock(&inode_lock);
 }
