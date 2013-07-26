@@ -333,6 +333,9 @@ static void bdi_flush_io(struct backing_dev_info *bdi)
 		.older_than_this	= NULL,
 		.range_cyclic		= 1,
 		.nr_to_write		= 1024,
+		.memcg_id		= 0,
+		.for_cgroup		= 0,
+		.shared_inodes		= 0,
 	};
 
 	writeback_inodes_wb(&bdi->wb, &wbc);

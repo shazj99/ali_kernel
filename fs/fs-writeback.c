@@ -44,9 +44,13 @@ struct wb_writeback_work {
 	long nr_pages;
 	struct super_block *sb;
 	enum writeback_sync_modes sync_mode;
+	unsigned short memcg_id;	/* If non-zero, then writeback specified
+					 * cgroup. */
 	int for_kupdate:1;
 	int range_cyclic:1;
 	int for_background:1;
+	int for_cgroup:1;	/* cgroup writeback */
+	int shared_inodes:1;	/* write inodes spanning cgroups */
 	struct list_head list;		/* pending work list */
 	struct completion *done;	/* set if the caller waits */
 };
@@ -95,9 +99,12 @@ static void bdi_queue_work(struct backing_dev_info *bdi,
 	}
 }
 
+/*
+ * @memcg is optional.  If set, then limit writeback to the specified cgroup.
+ */
 static void
 __bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
-		bool range_cyclic, bool for_background)
+		bool range_cyclic, bool for_background, struct mem_cgroup *memcg)
 {
 	struct wb_writeback_work *work;
 
@@ -118,6 +125,8 @@ __bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
 	work->nr_pages	= nr_pages;
 	work->range_cyclic = range_cyclic;
 	work->for_background = for_background;
+	work->memcg_id = memcg ? css_id(mem_cgroup_css(memcg)) : 0;
+	work->for_cgroup = memcg != NULL;
 
 	bdi_queue_work(bdi, work);
 }
@@ -135,7 +144,7 @@ __bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages,
  */
 void bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages)
 {
-	__bdi_start_writeback(bdi, nr_pages, true, false);
+	__bdi_start_writeback(bdi, nr_pages, true, false, NULL);
 }
 
 /**
@@ -149,7 +158,7 @@ void bdi_start_writeback(struct backing_dev_info *bdi, long nr_pages)
  */
 void bdi_start_background_writeback(struct backing_dev_info *bdi)
 {
-	__bdi_start_writeback(bdi, LONG_MAX, true, true);
+	__bdi_start_writeback(bdi, LONG_MAX, true, true, NULL);
 }
 
 /*
@@ -219,14 +228,20 @@ static void move_expired_inodes(struct list_head *delaying_queue,
 	LIST_HEAD(tmp);
 	struct list_head *pos, *node;
 	struct super_block *sb = NULL;
-	struct inode *inode;
+	struct inode *inode, *tmp_inode;
 	int do_sb_sort = 0;
 
-	while (!list_empty(delaying_queue)) {
+	list_for_each_entry_safe_reverse(inode, tmp_inode, delaying_queue,
+					 i_list) {
 		inode = list_entry(delaying_queue->prev, struct inode, i_list);
 		if (work->older_than_this &&
 		    inode_dirtied_after(inode, *work->older_than_this))
 			break;
+		if (work->for_cgroup &&
+			!should_writeback_mem_cgroup_inode(inode,
+						       work->memcg_id,
+						       work->shared_inodes))
+			continue;
 		if (sb && sb != inode->i_sb)
 			do_sb_sort = 1;
 		sb = inode->i_sb;
@@ -564,14 +579,38 @@ static void __writeback_inodes_sb(struct super_block *sb,
  */
 #define MAX_WRITEBACK_PAGES     1024
 
-static inline bool over_bground_thresh(void)
+static inline bool over_bground_thresh(struct writeback_control *wbc)
 {
 	unsigned long background_thresh, dirty_thresh;
 
 	get_dirty_limits(&background_thresh, &dirty_thresh, NULL, NULL);
 
-	return (global_page_state(NR_FILE_DIRTY) +
-		global_page_state(NR_UNSTABLE_NFS) >= background_thresh);
+	if (global_page_state(NR_FILE_DIRTY) +
+	    global_page_state(NR_UNSTABLE_NFS) > background_thresh) {
+		wbc->for_cgroup = 0;
+		return true;
+	}
+
+	/*
+	 * System dirty memory is below system background limit.  Check if any
+	 * memcg are over memcg background limit.
+	 */
+	if (mem_cgroups_over_bground_dirty_thresh()) {
+		wbc->for_cgroup = 1;
+
+		/*
+		 * Set shared_inodes so that background flusher writes shared
+		 * inodes in addition to inodes in over-limit memcg.  Such
+		 * shared inodes should be rarer than inodes written by a single
+		 * memcg.  Shared inodes limit the ability to map from memcg to
+		 * inode in wakeup_flusher_threads() and writeback_inodes_wb().
+		 * So the quicker such shared inodes are written, the better.
+		 */
+		wbc->shared_inodes = 1;
+		return true;
+	}
+
+	return false;
 }
 
 /*
@@ -598,6 +637,9 @@ static long wb_writeback(struct bdi_writeback *wb,
 		.for_kupdate		= work->for_kupdate,
 		.for_background		= work->for_background,
 		.range_cyclic		= work->range_cyclic,
+		.for_cgroup		= work->for_cgroup,
+		.memcg_id		= work->memcg_id,
+		.shared_inodes		= work->shared_inodes,
 	};
 	unsigned long oldest_jif;
 	long wrote = 0;
@@ -625,7 +667,7 @@ static long wb_writeback(struct bdi_writeback *wb,
 		 * For background writeout, stop when we are below the
 		 * background dirty threshold
 		 */
-		if (work->for_background && !over_bground_thresh())
+		if (work->for_background && !over_bground_thresh(&wbc))
 			break;
 
 		wbc.more_io = 0;
@@ -640,6 +682,9 @@ static long wb_writeback(struct bdi_writeback *wb,
 		trace_wbc_writeback_written(&wbc, wb->bdi);
 		work->nr_pages -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
 		wrote += MAX_WRITEBACK_PAGES - wbc.nr_to_write;
+
+		if (wbc.nr_to_write < MAX_WRITEBACK_PAGES)
+			mem_cgroup_writeback_done();
 
 		/*
 		 * If we consumed everything, see if we have more
@@ -816,10 +861,11 @@ int bdi_writeback_task(struct bdi_writeback *wb)
 }
 
 /*
- * Start writeback of `nr_pages' pages.  If `nr_pages' is zero, write back
- * the whole world.
+ * Start writeback of `nr_pages' pages.  If `nr_pages' is zero, write back the
+ * whole world.  If 'memcg' is non-NULL, then limit attempt to only write pages
+ * from the specified cgroup.
  */
-void wakeup_flusher_threads(long nr_pages)
+void wakeup_flusher_threads(long nr_pages, struct mem_cgroup *memcg)
 {
 	struct backing_dev_info *bdi;
 
@@ -832,7 +878,7 @@ void wakeup_flusher_threads(long nr_pages)
 	list_for_each_entry_rcu(bdi, &bdi_list, bdi_list) {
 		if (!bdi_has_dirty_io(bdi))
 			continue;
-		__bdi_start_writeback(bdi, nr_pages, false, false);
+		__bdi_start_writeback(bdi, nr_pages, false, false, memcg);
 	}
 	rcu_read_unlock();
 }

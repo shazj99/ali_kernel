@@ -501,6 +501,9 @@ static void balance_dirty_pages(struct address_space *mapping,
 			.older_than_this = NULL,
 			.nr_to_write	= write_chunk,
 			.range_cyclic	= 1,
+			.memcg_id	= 0,
+			.for_cgroup	= 0,
+			.shared_inodes	= 0,
 		};
 
 		get_dirty_limits(&background_thresh, &dirty_thresh,
@@ -708,7 +711,7 @@ int dirty_writeback_centisecs_handler(ctl_table *table, int write,
 
 static void do_laptop_sync(struct work_struct *work)
 {
-	wakeup_flusher_threads(0);
+	wakeup_flusher_threads(0, NULL);
 	kfree(work);
 }
 

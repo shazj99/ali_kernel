@@ -8,6 +8,7 @@
 #include <linux/fs.h>
 
 struct backing_dev_info;
+struct mem_cgroup;
 
 extern spinlock_t inode_lock;
 extern struct list_head inode_in_use;
@@ -30,6 +31,8 @@ struct writeback_control {
 	enum writeback_sync_modes sync_mode;
 	unsigned long *older_than_this;	/* If !NULL, only write back inodes
 					   older than this */
+	unsigned short memcg_id;	/* If non-zero, then writeback specified
+					 * cgroup. */
 	unsigned long wb_start;         /* Time writeback_inodes_wb was
 					   called. This is needed to avoid
 					   extra jobs and livelock */
@@ -52,6 +55,8 @@ struct writeback_control {
 	unsigned for_reclaim:1;		/* Invoked from the page allocator */
 	unsigned range_cyclic:1;	/* range_start is cyclic */
 	unsigned more_io:1;		/* more io to be dispatched */
+	unsigned for_cgroup:1;		/* cgroup writeback */
+	unsigned shared_inodes:1;	/* write inodes spanning cgroups */
 
 	/* reserved for Red Hat */
 	unsigned long rh_reserved[5];
@@ -70,7 +75,7 @@ void sync_inodes_sb(struct super_block *);
 void writeback_inodes_wb(struct bdi_writeback *wb,
 		struct writeback_control *wbc);
 long wb_do_writeback(struct bdi_writeback *wb, int force_wait);
-void wakeup_flusher_threads(long nr_pages);
+void wakeup_flusher_threads(long nr_pages, struct mem_cgroup *memcg);
 
 /* writeback.h requires fs.h; it, too, is not included from here. */
 static inline void wait_on_inode(struct inode *inode)
