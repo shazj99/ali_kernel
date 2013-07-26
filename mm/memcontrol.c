@@ -339,12 +339,20 @@ enum charge_type {
 #define MEM_CGROUP_RECLAIM_SOFT_BIT	0x2
 #define MEM_CGROUP_RECLAIM_SOFT		(1 << MEM_CGROUP_RECLAIM_SOFT_BIT)
 
+/*
+ * A bitmap representing all possible memcg, indexed by css_id.  Each bit
+ * indicates if the respective memcg is over its background dirty memory
+ * limit.
+ */
+static DECLARE_BITMAP(over_bground_dirty_thresh, CSS_ID_MAX + 1);
+
 static void mem_cgroup_get(struct mem_cgroup *mem);
 static void mem_cgroup_put(struct mem_cgroup *mem);
 static struct mem_cgroup *parent_mem_cgroup(struct mem_cgroup *mem);
 static void drain_all_stock_async(void);
 static void mem_cgroup_get_recursive_idx_stat(struct mem_cgroup *mem,
 				enum mem_cgroup_stat_index idx, s64 *val);
+static struct mem_cgroup *mem_cgroup_lookup(unsigned short id);
 
 static struct mem_cgroup_per_zone *
 mem_cgroup_zoneinfo(struct mem_cgroup *mem, int nid, int zid)
@@ -1238,6 +1246,149 @@ void mem_cgroup_dirty_info(unsigned long sys_available_mem,
 		mem_cgroup_page_stat(memcg, MEM_CGROUP_STAT_FILE_UNSTABLE_NFS);
 
 	trace_mem_cgroup_dirty_info(css_id(&memcg->css), info);
+}
+
+/* Are any memcg over their background dirty memory limit? */
+bool mem_cgroups_over_bground_dirty_thresh(void)
+{
+	bool over_thresh;
+
+	over_thresh = !bitmap_empty(over_bground_dirty_thresh, CSS_ID_MAX + 1);
+
+	trace_mem_cgroups_over_bground_dirty_thresh(
+		over_thresh,
+		over_thresh ? find_next_bit(over_bground_dirty_thresh,
+					    CSS_ID_MAX + 1, 0) : 0);
+
+	return over_thresh;
+}
+
+/*
+ * This routine is used by per-memcg writeback to determine if @inode should be
+ * written back.  The routine checks memcg attributes to determine if the inode
+ * should be written.  Note: non-memcg writeback code may choose to writeback
+ * this inode for non-memcg factors: dirtied_when time, etc.
+ *
+ * The optional @memcg_id parameter indicates the specific memcg being written
+ * back.  If set (non-zero), then only writeback inodes dirtied by @memcg_id.
+ * If unset (zero), then writeback inodes dirtied by memcg over background dirty
+ * page limit.
+ *
+ * If @shared_inodes is set, then also consider any inodes dirtied by multiple
+ * memcg.
+ *
+ * Returns true if the inode should be written back, false otherwise.
+ */
+bool should_writeback_mem_cgroup_inode(struct inode *inode,
+				       unsigned short memcg_id,
+				       bool shared_inodes)
+{
+	struct mem_cgroup *memcg;
+	struct mem_cgroup *inode_memcg;
+	unsigned short inode_id;
+	bool wb;
+
+	inode_id = inode->i_mapping->i_memcg;
+	VM_BUG_ON(inode_id >= CSS_ID_MAX + 1);
+
+	if (shared_inodes && inode_id == I_MEMCG_SHARED)
+		wb = true;
+	else if (memcg_id) {
+		if (memcg_id == inode_id)
+			wb = true;
+		else {
+			/*
+			 * Determine if inode is owned by a hierarchy child of
+			 * memcg_id.
+			 */
+			rcu_read_lock();
+			memcg = mem_cgroup_lookup(memcg_id);
+			inode_memcg = mem_cgroup_lookup(inode_id);
+			wb = memcg && inode_memcg &&
+				memcg->use_hierarchy &&
+				css_is_ancestor(&inode_memcg->css,
+						&memcg->css);
+			rcu_read_unlock();
+		}
+	} else
+		wb = test_bit(inode_id, over_bground_dirty_thresh);
+
+	trace_should_writeback_mem_cgroup_inode(inode, memcg_id, shared_inodes,
+						wb);
+	return wb;
+}
+
+/*
+ * Mark all child cgroup as eligible for writeback because @memcg is over its bg
+ * threshold.
+ */
+static int mem_cgroup_mark_over_bg_thresh(struct mem_cgroup *memcg, void *data)
+{
+	set_bit(css_id(&memcg->css), over_bground_dirty_thresh);
+	return 0;
+}
+
+void mem_cgroup_queue_bg_writeback(struct mem_cgroup *memcg,
+					  struct backing_dev_info *bdi)
+{
+	/* mark this and all child cgroup as candidates for writeback */
+	mem_cgroup_walk_tree(memcg, NULL, mem_cgroup_mark_over_bg_thresh);
+	bdi_start_background_writeback(bdi);
+}
+
+/*
+ * This routine is called as writeback writes inode pages.  The routine clears
+ * any over-background-limit bits for memcg that are no longer over their
+ * background dirty limit.
+ */
+void mem_cgroup_writeback_done(void)
+{
+	struct mem_cgroup *memcg;
+	struct mem_cgroup *ref_memcg;
+	struct dirty_info info;
+	unsigned long sys_available_mem;
+	int id;
+
+	sys_available_mem = 0;
+
+	/* for each previously over-bg-limit memcg... */
+	for (id = 0; (id = find_next_bit(over_bground_dirty_thresh,
+					 CSS_ID_MAX + 1, id)) < CSS_ID_MAX + 1;
+	     id++) {
+
+		/* reference the memcg */
+		rcu_read_lock();
+		memcg = mem_cgroup_lookup(id);
+		if (memcg && !css_tryget(&memcg->css))
+			memcg = NULL;
+		rcu_read_unlock();
+		if (!memcg) {
+			clear_bit(id, over_bground_dirty_thresh);
+			continue;
+		}
+		ref_memcg = memcg;
+
+		if (!sys_available_mem)
+			sys_available_mem = determine_dirtyable_memory();
+
+		/*
+		 * Walk the ancestry of inode's memcg clearing the over-limit
+		 * bits for for any memcg under its dirty memory background
+		 * threshold.
+		 */
+		for (; mem_cgroup_has_dirty_limit(memcg);
+		     memcg = parent_mem_cgroup(memcg)) {
+			mem_cgroup_dirty_info(sys_available_mem, memcg, &info);
+			if (dirty_info_reclaimable(&info) >=
+			    info.background_thresh)
+				break;
+
+			clear_bit(css_id(&memcg->css),
+				  over_bground_dirty_thresh);
+		}
+
+		css_put(&ref_memcg->css);
+	}
 }
 
 /**

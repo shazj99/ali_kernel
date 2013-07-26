@@ -159,6 +159,13 @@ static inline bool mem_cgroup_disabled(void)
 
 void mem_cgroup_update_page_stat(struct page *page, enum mem_cgroup_stat_index idx,
 						int val);
+
+bool should_writeback_mem_cgroup_inode(struct inode *inode,
+				       unsigned short memcg_id,
+				       bool shared_inodes);
+bool mem_cgroups_over_bground_dirty_thresh(void);
+void mem_cgroup_writeback_done(void);
+
 unsigned long mem_cgroup_soft_limit_reclaim(struct zone *zone, int order,
 						gfp_t gfp_mask, int nid,
 						int zid);
@@ -344,6 +351,23 @@ mem_cgroup_print_oom_info(struct mem_cgroup *memcg, struct task_struct *p)
 
 static inline void mem_cgroup_update_page_stat(struct page *page,
 					enum mem_cgroup_stat_index idx, int val)
+{
+}
+
+static inline bool
+should_writeback_mem_cgroup_inode(struct inode *inode,
+				  unsigned short memcg_id,
+				  bool shared_inodes)
+{
+	return true;
+}
+
+static inline bool mem_cgroups_over_bground_dirty_thresh(void)
+{
+	return true;
+}
+
+static inline void mem_cgroup_writeback_done(void)
 {
 }
 

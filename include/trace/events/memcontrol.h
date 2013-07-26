@@ -60,6 +60,59 @@ TRACE_EVENT(mem_cgroup_dirty_info,
 		  __entry->nr_unstable_nfs)
 )
 
+TRACE_EVENT(should_writeback_mem_cgroup_inode,
+	TP_PROTO(struct inode *inode,
+		 unsigned short css_id,
+		 bool shared_inodes,
+		 bool wb),
+
+	TP_ARGS(inode, css_id, shared_inodes, wb),
+
+	TP_STRUCT__entry(
+		__field(unsigned long, ino)
+		__field(unsigned short, inode_css_id)
+		__field(unsigned short, css_id)
+		__field(bool, shared_inodes)
+		__field(bool, wb)
+	),
+
+	TP_fast_assign(
+		__entry->ino = inode->i_ino;
+		__entry->inode_css_id =
+			inode->i_mapping ? inode->i_mapping->i_memcg : 0;
+		__entry->css_id = css_id;
+		__entry->shared_inodes = shared_inodes;
+		__entry->wb = wb;
+	),
+
+	TP_printk("ino=%ld inode_css_id=%d css_id=%d shared_inodes=%d wb=%d",
+		  __entry->ino,
+		  __entry->inode_css_id,
+		  __entry->css_id,
+		  __entry->shared_inodes,
+		  __entry->wb)
+)
+
+TRACE_EVENT(mem_cgroups_over_bground_dirty_thresh,
+	TP_PROTO(bool over_limit,
+		 unsigned short first_id),
+
+	TP_ARGS(over_limit, first_id),
+
+	TP_STRUCT__entry(
+		__field(bool, over_limit)
+		__field(unsigned short, first_id)
+	),
+
+	TP_fast_assign(
+		__entry->over_limit = over_limit;
+		__entry->first_id = first_id;
+	),
+
+	TP_printk("over_limit=%d first_css_id=%d", __entry->over_limit,
+		  __entry->first_id)
+)
+
 #endif /* _TRACE_MEMCONTROL_H */
 
 /* This part must be outside protection */

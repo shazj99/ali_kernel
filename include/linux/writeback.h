@@ -104,7 +104,6 @@ extern unsigned int dirty_expire_interval;
 extern int vm_highmem_is_dirtyable;
 extern int block_dump;
 extern int laptop_mode;
-
 extern unsigned long determine_dirtyable_memory(void);
 
 extern int dirty_background_ratio_handler(struct ctl_table *table, int write,
