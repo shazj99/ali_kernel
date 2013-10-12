@@ -207,6 +207,7 @@ enum
 	VM_ENABLE_CONTEXT_READAHEAD=36, /* Decide whether to do context readahead or not */
 	VM_MLOCK_FLUSH_PAGEVEC=37,	/* switch of flushing lru pagevec in mlock */
 	VM_ENABLE_LEGACY_MM=38,	/* enable 2.6.18 kernel mm algorithm */
+	VM_MEMCG_OOM_NR_RETRIES=39, /* control numbers of retry in memcg reclaim */
 };
 
 

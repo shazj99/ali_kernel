@@ -53,6 +53,8 @@ struct cgroup_subsys mem_cgroup_subsys __read_mostly;
 #define MEM_CGROUP_RECLAIM_RETRIES	5
 struct mem_cgroup *root_mem_cgroup __read_mostly;
 
+int sysctl_memcg_nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
+
 #ifdef CONFIG_CGROUP_MEM_RES_CTLR_SWAP
 /* Turned on only when memory cgroup is enabled && really_do_swap_account = 1 */
 int do_swap_account __read_mostly;
@@ -1636,7 +1638,7 @@ static int __mem_cgroup_try_charge(struct mm_struct *mm,
 {
 	unsigned int batch = max_t(unsigned int, CHARGE_SIZE, page_size);
 	struct mem_cgroup *mem, *mem_over_limit;
-	int nr_retries = MEM_CGROUP_RECLAIM_RETRIES;
+	int nr_retries = sysctl_memcg_nr_retries;
 	struct res_counter *fail_res;
 	bool direct_reclaimed = false;
 

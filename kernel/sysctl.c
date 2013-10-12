@@ -100,6 +100,8 @@ extern int sysctl_enable_cnx_ra;
 extern int sysctl_mlock_flush_pagevec;
 extern int vm_enable_legacy_mm;
 extern int sysctl_enable_bio_netoops;
+extern int sysctl_memcg_nr_retries;
+
 /* bz790921 */
 int unmap_area_factor_sysctl_handler(ctl_table *table, int write,
 			void __user *buffer, size_t *length, loff_t *ppos);
@@ -1649,6 +1651,16 @@ static struct ctl_table vm_table[] = {
 		.strategy	= &sysctl_intvec,
 		.extra1		= &zero,
 		.extra2		= &one,
+	},
+	{
+		.ctl_name	= VM_MEMCG_OOM_NR_RETRIES,
+		.procname	= "memcg_oom_nr_retries",
+		.data		= &sysctl_memcg_nr_retries,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= &proc_dointvec_minmax,
+		.strategy	= &sysctl_intvec,
+		.extra1		= &one,
 	},
 /*
  * NOTE: do not add new entries to this table unless you have read
